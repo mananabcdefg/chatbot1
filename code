@@ -1,0 +1,150 @@
+import spacy
+import json
+import pickle
+import requests
+from datetime import datetime
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.linear_model import LogisticRegression
+from sklearn.preprocessing import LabelEncoder
+from sklearn.metrics import classification_report
+
+# Load spaCy English model
+nlp = spacy.load("en_core_web_sm")
+
+# Load intents
+with open("intents.json", "r") as file:
+    data = json.load(file)
+    intents = data["intents"]
+
+# Preprocess data
+patterns = []
+classes = []
+documents = []
+
+for intent in intents:
+    for pattern in intent["patterns"]:
+        doc = nlp(pattern)
+        tokens = [token.lemma_.lower() for token in doc if token.is_alpha]
+        documents.append((tokens, intent["tag"]))
+        patterns.extend(tokens)
+        if intent["tag"] not in classes:
+            classes.append(intent["tag"])
+
+patterns = sorted(set(patterns))
+classes = sorted(set(classes))
+
+# Vectorize training data
+training_sentences = [" ".join(tokens) for tokens, label in documents]
+training_labels = [label for tokens, label in documents]
+
+vectorizer = TfidfVectorizer()
+X_train = vectorizer.fit_transform(training_sentences).toarray()
+
+# Encode labels
+label_encoder = LabelEncoder()
+y_train = label_encoder.fit_transform(training_labels)
+
+# Train model
+classifier = LogisticRegression()
+classifier.fit(X_train, y_train)
+print("Model trained successfully!")
+
+# Optional: show performance
+y_pred = classifier.predict(X_train)
+# print(classification_report(y_train, y_pred, target_names=label_encoder.classes_))
+
+# Save models
+with open('intent_classifier.pkl', 'wb') as model_file:
+    pickle.dump(classifier, model_file)
+with open('vectorizer.pkl', 'wb') as vec_file:
+    pickle.dump(vectorizer, vec_file)
+with open('label_encoder.pkl', 'wb') as le_file:
+    pickle.dump(label_encoder, le_file)
+
+# Load models
+def load_models():
+    with open('intent_classifier.pkl', 'rb') as model_file:
+        classifier = pickle.load(model_file)
+    with open('vectorizer.pkl', 'rb') as vec_file:
+        vectorizer = pickle.load(vec_file)
+    with open('label_encoder.pkl', 'rb') as le_file:
+        label_encoder = pickle.load(le_file)
+    return classifier, vectorizer, label_encoder
+
+classifier, vectorizer, label_encoder = load_models()
+
+# OpenWeatherMap API key
+OPENWEATHER_API_KEY = "eebf8191856f44e1803214015251104"  # 🔑 Replace with your API key
+
+# Utility Functions
+def extract_city(text):
+    doc = nlp(text)
+    for ent in doc.ents:
+        if ent.label_ == "GPE":
+            return ent.text
+    return "Delhi"
+
+def get_weather(user_input, api_key):
+    city = extract_city(user_input)
+    url = f"http://api.openweathermap.org/data/2.5/weather?q={city}&appid={api_key}&units=metric"
+    response = requests.get(url)
+    if response.status_code == 200:
+        data = response.json()
+        temp = data['main']['temp']
+        desc = data['weather'][0]['description']
+        return f"The weather in {city} is {desc} with a temperature of {temp}°C."
+    else:
+        return "Sorry, I couldn't fetch the weather info right now."
+
+def get_current_time():
+    return datetime.now().strftime("The current time is %I:%M %p.")
+
+def get_current_date():
+    return datetime.now().strftime("Today is %A, %B %d, %Y.")
+
+# Predict function
+def predict_intent(user_input):
+    user_input_vectorized = vectorizer.transform([user_input]).toarray()
+    predicted_label_index = classifier.predict(user_input_vectorized)[0]
+    intent_tag = label_encoder.inverse_transform([predicted_label_index])[0]
+    return intent_tag
+
+# Interactive chatbot
+print("Bot: Hello! I'm your assistant. Type something or 'quit' to exit.")
+while True:
+    user_input = input("You: ")
+    if user_input.lower() in ["quit", "exit", "bye"]:
+        print("Bot: Goodbye! Take care.")
+        break
+
+    intent_tag = predict_intent(user_input)
+    
+
+    # Pick a random response from matched intent
+    responses = [intent['responses'] for intent in data['intents'] if intent['tag'] == intent_tag]
+    if responses:
+        import random
+        response = random.choice(responses[0])
+    else:
+        response = "Sorry, I didn't understand that."
+
+    print("Bot:", response)
+
+
+    # Custom responses for weather, date, and time
+    if intent_tag == "weather":
+        print("Bot:", get_weather(user_input, OPENWEATHER_API_KEY ))
+        continue
+    elif intent_tag == "date":
+        print("Bot:", get_current_date())
+        continue
+    elif intent_tag == "time":
+        print("Bot:", get_current_time())
+        continue
+
+    # Default response from intents.json
+    for intent in intents:
+        if intent["tag"] == intent_tag:
+           import random
+print("Bot:", random.choice(intent["responses"]))
+                    
